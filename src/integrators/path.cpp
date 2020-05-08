@@ -7,7 +7,99 @@
 #include <mitsuba/render/integrator.h>
 #include <mitsuba/render/records.h>
 
+#include<iostream>
+#include<cmath>
+#include<map>
+#include<string>
+#include<vector>
+
 NAMESPACE_BEGIN(mitsuba)
+
+
+/**
+Constants
+-------------------------------------------
+**/
+
+#define Npoints 15
+#define UVdir 100
+
+/**
+Low discrepancy Hammersley generator
+-------------------------------------------
+**/
+
+struct vec2
+{
+    vec2(float x, float y)
+    {
+        this->x = x;
+        this->y = y;
+    }
+    float x;
+    float y;
+};
+
+float dist(vec2 v1, vec2 v2)
+{
+    return sqrt((v1.x-v2.x)*(v1.x-v2.x) + (v1.y-v2.y)*(v1.y-v2.y));
+}
+
+float RadicalInverse_VdC(uint bits) 
+{
+    bits = (bits << 16u) | (bits >> 16u);
+    bits = ((bits & 0x55555555u) << 1u) | ((bits & 0xAAAAAAAAu) >> 1u);
+    bits = ((bits & 0x33333333u) << 2u) | ((bits & 0xCCCCCCCCu) >> 2u);
+    bits = ((bits & 0x0F0F0F0Fu) << 4u) | ((bits & 0xF0F0F0F0u) >> 4u);
+    bits = ((bits & 0x00FF00FFu) << 8u) | ((bits & 0xFF00FF00u) >> 8u);
+    return float(bits) * 2.3283064365386963e-10; // / 0x100000000
+}
+
+vec2 Hammersley(uint i, uint N)
+{
+    return vec2(float(i)/float(N), RadicalInverse_VdC(i));
+}
+
+int findIdx(float x, float y, uint N)
+{
+    int minIdx = 0;
+    float minDist = dist(vec2(x,y),Hammersley(0,N));
+    for(uint i=1; i<N; i++)
+    {
+        float tempDist = dist(vec2(x,y),Hammersley(i,N));
+        if(tempDist < minDist)
+        {
+            minIdx = i;
+            minDist = tempDist;
+        }
+    }
+    return minIdx;
+}
+
+/**
+-------------------------------------------
+**/
+
+std::map<std::pair<std::string, int>, std::vector<std::vector<float> > > qlist;
+
+void setupQlist(std::string shape, int prim)
+{
+    if(qlist.find(std::pair(shape, prim)) == qlist.end() )
+    {
+        std::vector<std::vector<float> > qtable;
+        qtable.resize(100);
+        for(int i =0; i<100; i++)
+        {
+            qtable[i].resize(100);
+        }
+        qlist.insert({std::pair(shape, prim) , qtable});
+    }
+}
+
+/**
+-------------------------------------------
+**/
+
 
 /**!
 
@@ -89,6 +181,8 @@ both direct and indirect illumination.
 
  */
 
+std::map<std::string, int> mymap;
+
 template <typename Float, typename Spectrum>
 class PathIntegrator : public MonteCarloIntegrator<Float, Spectrum> {
 public:
@@ -120,13 +214,23 @@ public:
         Mask valid_ray = si.is_valid();
         EmitterPtr emitter = si.emitter(scene);
 
+        int idx = 0;
+        if(any_or<true>(neq(si.shape, nullptr)))
+        {
+            idx = findIdx(si.uv.x(),si.uv.y(),15);
+        }
+
         for (int depth = 1;; ++depth) {
 
+            if(any_or<true>(neq(si.shape, nullptr)))
+                setupQlist(si.shape->id(), si.prim_index);
             // ---------------- Intersection with emitters ----------------
 
             if (any_or<true>(neq(emitter, nullptr)))
+            {
+                //std::cout << "Depth:" << si << "\n";
                 result[active] += emission_weight * throughput * emitter->eval(si, active);
-
+            }
             active &= si.is_valid();
 
             /* Russian roulette: try to keep path weights equal to one,
@@ -167,7 +271,9 @@ public:
                 Float bsdf_pdf = bsdf->pdf(ctx, si, wo, active_e);
 
                 Float mis = select(ds.delta, 1.f, mis_weight(ds.pdf, bsdf_pdf));
+
                 result[active_e] += mis * throughput * bsdf_val * emitter_val;
+
             }
 
             // ----------------------- BSDF sampling ----------------------
@@ -205,7 +311,6 @@ public:
 
             si = std::move(si_bsdf);
         }
-
         return { result, valid_ray };
     }
 
